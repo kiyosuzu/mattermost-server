@@ -21,6 +21,7 @@ type SearchTestHelper struct {
 	User               *model.User
 	User2              *model.User
 	UserAnotherTeam    *model.User
+	Bot                *model.Bot
 	ChannelBasic       *model.Channel
 	ChannelPrivate     *model.Channel
 	ChannelAnotherTeam *model.Channel
@@ -70,6 +71,11 @@ func (th *SearchTestHelper) SetupBasicFixtures() error {
 		return err
 	}
 
+	bot, err := th.createBot("testbot", "Test Bot", user.Id)
+	if err != nil {
+		return err
+	}
+
 	err = th.addUserToTeams(user, []string{team.Id, anotherTeam.Id})
 	if err != nil {
 		return err
@@ -81,6 +87,11 @@ func (th *SearchTestHelper) SetupBasicFixtures() error {
 	}
 
 	err = th.addUserToTeams(useranother, []string{anotherTeam.Id})
+	if err != nil {
+		return err
+	}
+
+	err = th.addUserToTeams(model.UserFromBot(bot), []string{team.Id})
 	if err != nil {
 		return err
 	}
@@ -100,11 +111,17 @@ func (th *SearchTestHelper) SetupBasicFixtures() error {
 		return err
 	}
 
+	_, err = th.addUserToChannels(model.UserFromBot(bot), []string{channelBasic.Id, channelPrivate.Id})
+	if err != nil {
+		return err
+	}
+
 	th.Team = team
 	th.AnotherTeam = anotherTeam
 	th.User = user
 	th.User2 = user2
 	th.UserAnotherTeam = useranother
+	th.Bot = bot
 	th.ChannelBasic = channelBasic
 	th.ChannelPrivate = channelPrivate
 	th.ChannelAnotherTeam = channelAnotherTeam
@@ -203,6 +220,36 @@ func (th *SearchTestHelper) deleteUser(user *model.User) error {
 		return errors.New(appError.Error())
 	}
 
+	return nil
+}
+
+func (th *SearchTestHelper) createBot(username, displayName, ownerID string) (*model.Bot, error) {
+	botModel := &model.Bot{
+		Username:    username,
+		DisplayName: displayName,
+		OwnerId:     ownerID,
+	}
+
+	user, apperr := th.Store.User().Save(model.UserFromBot(botModel))
+	if apperr != nil {
+		return nil, errors.New(apperr.Error())
+	}
+
+	botModel.UserId = user.Id
+	bot, apperr := th.Store.Bot().Save(botModel)
+	if apperr != nil {
+		th.Store.User().PermanentDelete(bot.UserId)
+		return nil, errors.New(apperr.Error())
+	}
+
+	return bot, nil
+}
+
+func (th *SearchTestHelper) deleteBot(botID string) error {
+	err := th.Store.Bot().PermanentDelete(botID)
+	if err != nil {
+		return errors.New(err.Error())
+	}
 	return nil
 }
 
@@ -322,25 +369,42 @@ func (th *SearchTestHelper) deleteChannels(channels []*model.Channel) error {
 	return nil
 }
 
-func (th *SearchTestHelper) createPost(userID, channelID, message, hashtags string, createAt int64, pinned bool) (*model.Post, error) {
-	var creationTime int64 = 1000000
-	if createAt > 0 {
-		creationTime = createAt
-	}
-	post, appError := th.Store.Post().Save(&model.Post{
+func (th *SearchTestHelper) createPostModel(userID, channelID, message, hashtags, postType string, createAt int64, pinned bool) *model.Post {
+	return &model.Post{
 		Message:       message,
 		ChannelId:     channelID,
 		PendingPostId: model.NewId() + ":" + fmt.Sprint(model.GetMillis()),
 		UserId:        userID,
 		Hashtags:      hashtags,
 		IsPinned:      pinned,
-		CreateAt:      creationTime,
-	})
+		CreateAt:      createAt,
+		Type:          postType,
+	}
+}
+
+func (th *SearchTestHelper) createPost(userID, channelID, message, hashtags, postType string, createAt int64, pinned bool) (*model.Post, error) {
+	var creationTime int64 = 1000000
+	if createAt > 0 {
+		creationTime = createAt
+	}
+	postModel := th.createPostModel(userID, channelID, message, hashtags, postType, creationTime, pinned)
+	post, appError := th.Store.Post().Save(postModel)
 	if appError != nil {
 		return nil, errors.New(appError.Error())
 	}
 
 	return post, nil
+}
+
+func (th *SearchTestHelper) createReply(userID, message, hashtags string, parent *model.Post, createAt int64, pinned bool) (*model.Post, error) {
+	replyModel := th.createPostModel(userID, parent.ChannelId, message, hashtags, parent.Type, createAt, pinned)
+	replyModel.ParentId = parent.Id
+	replyModel.RootId = parent.Id
+	reply, appError := th.Store.Post().Save(replyModel)
+	if appError != nil {
+		return nil, errors.New(appError.Error())
+	}
+	return reply, nil
 }
 
 func (th *SearchTestHelper) deleteUserPosts(userID string) error {
